@@ -1,5 +1,5 @@
 /*
- *  print.c
+ *  print.h
  *
  *  Created on: May 21, 2026
  *      Author: annatai
@@ -14,6 +14,7 @@
  */
 
 #include "stm32l4xx_hal.h"
+#include <string.h>
 
 UART_HandleTypeDef hlpuart1; // adjust for UART channel being used
 
