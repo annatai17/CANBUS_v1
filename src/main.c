@@ -22,8 +22,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include <stdio.h>
-#include <string.h>
+
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -61,7 +60,25 @@ static void MX_LPUART1_UART_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+CAN_RxHeaderTypeDef   RxHeader;
+uint8_t               RxData[8];
+uint8_t               datacheck;
 
+void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan) {
+	Serial_print("CAN message received...\n");
+
+	if (HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO0, &RxHeader, RxData) != HAL_OK) {
+		Error_Handler();
+	}
+
+	// perform check based on CAN ID of received message
+	/*
+	if ((RxHeader.StdId == 0x103))
+	{
+		datacheck = 1;
+	}
+	*/
+}
 /* USER CODE END 0 */
 
 /**
@@ -96,7 +113,12 @@ int main(void)
   MX_CAN1_Init();
   MX_LPUART1_UART_Init();
   /* USER CODE BEGIN 2 */
-  char str[] = "output to serial...\n";
+
+  if (HAL_CAN_ActivateNotification(&hcan1, CAN_IT_RX_FIFO0_MSG_PENDING) != HAL_OK)
+  {
+	Error_Handler();
+  }
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -106,12 +128,7 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    // serial output
-    Serial_print(str);
-    
-    // toggle LED
-    HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_7);
-    HAL_Delay(600);
+    //Serial_print("hello world\n");
   }
   /* USER CODE END 3 */
 }
@@ -176,7 +193,7 @@ static void MX_CAN1_Init(void)
 
   /* USER CODE END CAN1_Init 1 */
   hcan1.Instance = CAN1;
-  hcan1.Init.Prescaler = 16;
+  hcan1.Init.Prescaler = 14;
   hcan1.Init.Mode = CAN_MODE_NORMAL;
   hcan1.Init.SyncJumpWidth = CAN_SJW_1TQ;
   hcan1.Init.TimeSeg1 = CAN_BS1_1TQ;
@@ -340,13 +357,6 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pin = GPIO_PIN_2|GPIO_PIN_6;
   GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
-
-  /*Configure GPIO pin : PB7 */
-  GPIO_InitStruct.Pin = GPIO_PIN_7;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
   /*Configure GPIO pins : PE7 PE8 PE9 PE10
