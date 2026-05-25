@@ -4,20 +4,23 @@
  *  Created on: May 21, 2026
  *      Author: annatai
  * 
- *  silly serial print helper function for PlatformIO
- *  bc I can't figure out how to redirect 
- *  printf output to UART the same way 
- *  it is done in EECS 373 labs in CubeIDE </3
- * 
- *  requires UART to be configured 
- *  in IOC for serial output!
+ *  enables printf for serial output
+ *  
+ *  you MUST have these for this to work:
+ *  - UART configured in CubeIDE IOC
+ *  - add this line to int main() USER CODE BEGIN 2
+ *      setvbuf(stdout, NULL, _IONBF, 0); // DISMISS BUFFERING: Forces printf to send data immediately
  */
 
 #include "stm32l4xx_hal.h"
 #include <string.h>
 
-UART_HandleTypeDef hlpuart1; // adjust for UART channel being used
+extern UART_HandleTypeDef hlpuart1; // adjust for UART channel being used
 
-void Serial_print(char* str) {
-    HAL_UART_Transmit(&hlpuart1, (uint8_t *) str, strlen(str), 0xFFFF);
+// Override the GCC standard library write function
+int _write(int file, char *ptr, int len) 
+{
+    // Transmit the entire buffer at once over LPUART1
+    HAL_UART_Transmit(&hlpuart1, (uint8_t *)ptr, len, HAL_MAX_DELAY);
+    return len;
 }

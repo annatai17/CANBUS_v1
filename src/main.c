@@ -19,6 +19,10 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "print.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <math.h>
+#include <time.h>
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -46,6 +50,22 @@ CAN_HandleTypeDef hcan1;
 UART_HandleTypeDef hlpuart1;
 
 /* USER CODE BEGIN PV */
+#define QUEUE_SIZE 10
+
+// CAN data decoding constants from provided DBC file
+#define TIME_SCALE 0.001
+#define TIME_OFFSET 1577840400
+
+#define POS_SCALE 0.000001
+#define LAT_OFFSET -90
+#define LONG_OFFSET -180
+
+#define SPEED_SCALE 0.001
+
+#define ACCEL_SCALE 0.125
+#define ACCEL_OFFSET -64
+#define ANGULAR_SCALE 0.25
+#define ANGULAR_OFFSET -256
 
 /* USER CODE END PV */
 
@@ -60,25 +80,58 @@ static void MX_LPUART1_UART_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-CAN_RxHeaderTypeDef   RxHeader;
-uint8_t               RxData[8];
-uint8_t               datacheck;
+typedef struct {
+    uint8_t is_extended;
+    uint32_t id;
+    uint8_t data[8];
+} CAN_Message;
+
+volatile CAN_Message can_queue[QUEUE_SIZE];
+volatile int write_index = 0;
+int read_index = 0;
 
 void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan) {
-	Serial_print("CAN message received...\n");
+  CAN_RxHeaderTypeDef rx_header;
+  uint8_t rx_data[8]; 
 
-	if (HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO0, &RxHeader, RxData) != HAL_OK) {
-		Error_Handler();
-	}
+  if (HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO0, &rx_header, rx_data) == HAL_OK) {
+    // copy data into queue
+    memcpy((void*)can_queue[write_index].data, rx_data, rx_header.DLC);
 
-	// perform check based on CAN ID of received message
-	/*
-	if ((RxHeader.StdId == 0x103))
-	{
-		datacheck = 1;
-	}
-	*/
+    // check CAN ID format
+    if (rx_header.IDE == CAN_ID_EXT) {
+      can_queue[write_index].id = rx_header.ExtId;
+      can_queue[write_index].is_extended = 1;
+    } 
+    else {
+      can_queue[write_index].id = rx_header.StdId;
+      can_queue[write_index].is_extended = 0;
+    }
+
+    // increment ptr
+    write_index = (write_index + 1) % QUEUE_SIZE;
+  }
 }
+
+// CAN data decoder helper function
+uint64_t extract_bits(uint64_t raw_data, int start, int length) {
+  // edge case: length = 0
+  if (length <= 0) return 0;
+  
+  // edge case: define behavior for lengths of 64 or greater
+  if (length >= 64) return raw_data >> start;
+  
+  // create bit mask with 64-bit 1
+  uint64_t mask = (1ULL << length) - 1;
+  return (raw_data >> start) & mask;
+}
+
+// CAN data decoder for GPS/IMU module
+double decode_physical_value(uint64_t raw_data, int start, int length, double offset, double scale) {
+  uint64_t raw_value = extract_bits(raw_data, start, length);
+  return offset + scale * (double) raw_value;
+}
+
 /* USER CODE END 0 */
 
 /**
@@ -113,11 +166,47 @@ int main(void)
   MX_CAN1_Init();
   MX_LPUART1_UART_Init();
   /* USER CODE BEGIN 2 */
+  
+  setvbuf(stdout, NULL, _IONBF, 0); // DISMISS BUFFERING: forces printf to send data immediately
 
+  // 1. Configure the CAN Filter to accept all messages
+  CAN_FilterTypeDef canfilterconfig;
+
+  canfilterconfig.FilterBank = 0;
+  canfilterconfig.FilterMode = CAN_FILTERMODE_IDMASK;
+  canfilterconfig.FilterScale = CAN_FILTERSCALE_32BIT; // enables extended 29-bit ids
+
+  // allow all incoming messages to pass through
+  canfilterconfig.FilterIdHigh = 0x0000;
+  canfilterconfig.FilterIdLow = 0x0000;
+  canfilterconfig.FilterMaskIdHigh = 0x0000;
+  canfilterconfig.FilterMaskIdLow = 0x0000;
+
+  // enable FIFO 0
+  canfilterconfig.FilterFIFOAssignment = CAN_FILTER_FIFO0;
+  canfilterconfig.FilterActivation = CAN_FILTER_ENABLE;
+  canfilterconfig.SlaveStartFilterBank = 14;
+
+  if (HAL_CAN_ConfigFilter(&hcan1, &canfilterconfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+ 
+  // 2. Start the CAN peripheral
+  if (HAL_CAN_Start(&hcan1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  // 3. Activate the notification
   if (HAL_CAN_ActivateNotification(&hcan1, CAN_IT_RX_FIFO0_MSG_PENDING) != HAL_OK)
   {
-	Error_Handler();
+    Error_Handler();
   }
+
+  // local variables
+  uint32_t trip_distance; // distance traveled since last reset
+  uint32_t total_distance; // distance traveled in total
 
   /* USER CODE END 2 */
 
@@ -127,8 +216,101 @@ int main(void)
   {
     /* USER CODE END WHILE */
 
-    /* USER CODE BEGIN 3 */
-    //Serial_print("hello world\n");
+    /* USER CODE BEGIN 3 */ 
+    uint8_t time_valid = 0;
+    uint8_t pos_valid = 0;
+    uint8_t dist_valid = 0;
+    uint8_t speed_valid = 0; 
+    uint8_t imu_valid = 0;
+
+    if (read_index != write_index) {     
+      // pull next CAN data frame off the queue
+      uint8_t is_ext = can_queue[read_index].is_extended;
+      uint32_t msg_id = can_queue[read_index].id;
+      uint64_t raw_data = *(uint64_t*)can_queue[read_index].data;
+
+      // process data based on CAN message ID
+      if (is_ext) {
+        // process extended IDs (encoders)
+        switch(msg_id) {
+          case 0x705: 
+            // process data here
+            break;
+        }
+      } 
+      else {
+        // process standard IDs (GPS, IMU)
+        switch(msg_id) {
+          // case 0x001: // GPS status - i don't think we really care about this
+          //   fix_type = extract_bits(raw_data, 0, 3);
+          //   break;
+          case 0x002: // GPS time
+            // there is also a time confirmed signal for more accurate time
+            // but time_valid is faster and should be ok
+            time_valid = extract_bits(raw_data, 0, 1);
+            break;
+          case 0x003: // GPS position
+            pos_valid = extract_bits(raw_data, 0, 1);
+            break;
+          case 0x006: // GPS distance
+            dist_valid = extract_bits(raw_data, 0, 1);
+            break;
+          case 0x007: // GPS speed
+            speed_valid = extract_bits(raw_data, 0, 1);
+            break;
+          case 0x009: // IMU data
+            imu_valid = extract_bits(raw_data, 0, 1);
+            break;
+        }
+      }
+      
+      // data processing based on the message ID and if the data is valid
+      if (time_valid) {
+        time_t now_gmt = (uint64_t) decode_physical_value(raw_data, 8, 40, TIME_OFFSET, TIME_SCALE);
+        struct tm ts;
+        char buf[80];
+
+        // Format time, "ddd yyyy-mm-dd hh:mm:ss zzz"
+        ts = *localtime(&now_gmt);
+        strftime(buf, sizeof(buf), "%a %Y-%m-%d %H:%M:%S %Z\n", &ts);
+
+        printf("%s", buf);
+      }
+      else if (pos_valid) {
+        double latitude = decode_physical_value(raw_data, 1, 28, LAT_OFFSET, POS_SCALE); // degrees
+        double longitude = decode_physical_value(raw_data, 29, 29, LONG_OFFSET, POS_SCALE);
+
+        printf("GPS position (deg, deg): %f, %f\n", latitude, longitude);
+      }
+      else if (dist_valid) {
+        trip_distance = extract_bits(raw_data, 1, 22); // meters
+        total_distance = extract_bits(raw_data, 42, 22); // kilometers
+
+        printf("trip distance (m): %ld\n", trip_distance);
+        printf("total distance (km): %ld\n", total_distance);
+      }
+      else if (speed_valid) {
+        double vehicle_speed = decode_physical_value(raw_data, 1, 20, 0, SPEED_SCALE); // meters/s
+        
+        printf("vehicle speed (m/s): %f\n", vehicle_speed);     
+      }
+      else if (imu_valid) {
+        double accel_x = decode_physical_value(raw_data, 1, 10, ACCEL_OFFSET, ACCEL_SCALE);
+        double accel_y = decode_physical_value(raw_data, 11, 10, ACCEL_OFFSET, ACCEL_SCALE);
+        double accel_z = decode_physical_value(raw_data, 21, 10, ACCEL_OFFSET, ACCEL_SCALE);
+        double angular_x = decode_physical_value(raw_data, 31, 11, ANGULAR_OFFSET, ANGULAR_SCALE);
+        double angular_y = decode_physical_value(raw_data, 42, 11, ANGULAR_OFFSET, ANGULAR_SCALE);
+        double angular_z = decode_physical_value(raw_data, 53, 11, ANGULAR_OFFSET, ANGULAR_SCALE);
+
+        // printf("acceleration (m/s^2): (%f, %f, %f)\n", accel_x, accel_y, accel_z); 
+        // printf("angular rate (deg/s): (%f, %f, %f)\n\n", angular_x, angular_y, angular_z);
+      } 
+
+      // HAL_Delay(500);
+
+      // move ptr to next item in queue
+      read_index = (read_index + 1) % QUEUE_SIZE;
+    }
   }
   /* USER CODE END 3 */
 }
@@ -193,10 +375,10 @@ static void MX_CAN1_Init(void)
 
   /* USER CODE END CAN1_Init 1 */
   hcan1.Instance = CAN1;
-  hcan1.Init.Prescaler = 14;
+  hcan1.Init.Prescaler = 1;
   hcan1.Init.Mode = CAN_MODE_NORMAL;
   hcan1.Init.SyncJumpWidth = CAN_SJW_1TQ;
-  hcan1.Init.TimeSeg1 = CAN_BS1_1TQ;
+  hcan1.Init.TimeSeg1 = CAN_BS1_2TQ;
   hcan1.Init.TimeSeg2 = CAN_BS2_1TQ;
   hcan1.Init.TimeTriggeredMode = DISABLE;
   hcan1.Init.AutoBusOff = DISABLE;
