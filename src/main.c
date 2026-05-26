@@ -19,10 +19,15 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "print.h"
+#include "fatfs.h"
+#include "sd_functions.h"
+#include "sd_benchmark.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
 #include <time.h>
+#include <string.h>
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -49,6 +54,10 @@ CAN_HandleTypeDef hcan1;
 
 UART_HandleTypeDef hlpuart1;
 
+SPI_HandleTypeDef hspi1;
+DMA_HandleTypeDef hdma_spi1_rx;
+DMA_HandleTypeDef hdma_spi1_tx;
+
 /* USER CODE BEGIN PV */
 #define QUEUE_SIZE 10
 
@@ -72,14 +81,19 @@ UART_HandleTypeDef hlpuart1;
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_DMA_Init(void);
 static void MX_CAN1_Init(void);
 static void MX_LPUART1_UART_Init(void);
+static void MX_SPI1_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+uint8_t bufr[80];
+UINT br;
+
 typedef struct {
     uint8_t is_extended;
     uint32_t id;
@@ -163,8 +177,10 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_CAN1_Init();
   MX_LPUART1_UART_Init();
+  MX_SPI1_Init();
   /* USER CODE BEGIN 2 */
   
   setvbuf(stdout, NULL, _IONBF, 0); // DISMISS BUFFERING: forces printf to send data immediately
@@ -208,6 +224,10 @@ int main(void)
   uint32_t trip_distance; // distance traveled since last reset
   uint32_t total_distance; // distance traveled in total
 
+  sd_mount();
+  sd_list_files();
+  sd_unmount();
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -231,12 +251,12 @@ int main(void)
 
       // process data based on CAN message ID
       if (is_ext) {
-        // process extended IDs (encoders)
-        switch(msg_id) {
-          case 0x705: 
-            // process data here
-            break;
-        }
+        // TODO: process extended IDs (encoders)
+        // switch(msg_id) {
+        //   case 0x705: 
+        //     // process data here
+        //     break;
+        // }
       } 
       else {
         // process standard IDs (GPS, IMU)
@@ -274,25 +294,25 @@ int main(void)
         ts = *localtime(&now_gmt);
         strftime(buf, sizeof(buf), "%a %Y-%m-%d %H:%M:%S %Z\n", &ts);
 
-        printf("%s", buf);
+        // printf("%s", buf);
       }
       else if (pos_valid) {
         double latitude = decode_physical_value(raw_data, 1, 28, LAT_OFFSET, POS_SCALE); // degrees
         double longitude = decode_physical_value(raw_data, 29, 29, LONG_OFFSET, POS_SCALE);
 
-        printf("GPS position (deg, deg): %f, %f\n", latitude, longitude);
+        // printf("GPS position (deg, deg): %f, %f\n", latitude, longitude);
       }
       else if (dist_valid) {
         trip_distance = extract_bits(raw_data, 1, 22); // meters
         total_distance = extract_bits(raw_data, 42, 22); // kilometers
 
-        printf("trip distance (m): %ld\n", trip_distance);
-        printf("total distance (km): %ld\n", total_distance);
+        // printf("trip distance (m): %ld\n", trip_distance);
+        // printf("total distance (km): %ld\n", total_distance);
       }
       else if (speed_valid) {
         double vehicle_speed = decode_physical_value(raw_data, 1, 20, 0, SPEED_SCALE); // meters/s
         
-        printf("vehicle speed (m/s): %f\n", vehicle_speed);     
+        // printf("vehicle speed (m/s): %f\n", vehicle_speed);     
       }
       else if (imu_valid) {
         double accel_x = decode_physical_value(raw_data, 1, 10, ACCEL_OFFSET, ACCEL_SCALE);
@@ -445,6 +465,66 @@ static void MX_LPUART1_UART_Init(void)
 }
 
 /**
+  * @brief SPI1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_SPI1_Init(void)
+{
+
+  /* USER CODE BEGIN SPI1_Init 0 */
+
+  /* USER CODE END SPI1_Init 0 */
+
+  /* USER CODE BEGIN SPI1_Init 1 */
+
+  /* USER CODE END SPI1_Init 1 */
+  /* SPI1 parameter configuration*/
+  hspi1.Instance = SPI1;
+  hspi1.Init.Mode = SPI_MODE_MASTER;
+  hspi1.Init.Direction = SPI_DIRECTION_2LINES;
+  hspi1.Init.DataSize = SPI_DATASIZE_8BIT;
+  hspi1.Init.CLKPolarity = SPI_POLARITY_LOW;
+  hspi1.Init.CLKPhase = SPI_PHASE_1EDGE;
+  hspi1.Init.NSS = SPI_NSS_SOFT;
+  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_2;
+  hspi1.Init.FirstBit = SPI_FIRSTBIT_MSB;
+  hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
+  hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
+  hspi1.Init.CRCPolynomial = 7;
+  hspi1.Init.CRCLength = SPI_CRC_LENGTH_DATASIZE;
+  hspi1.Init.NSSPMode = SPI_NSS_PULSE_ENABLE;
+  if (HAL_SPI_Init(&hspi1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN SPI1_Init 2 */
+
+  /* USER CODE END SPI1_Init 2 */
+
+}
+
+/**
+  * Enable DMA controller clock
+  */
+static void MX_DMA_Init(void)
+{
+
+  /* DMA controller clock enable */
+  __HAL_RCC_DMAMUX1_CLK_ENABLE();
+  __HAL_RCC_DMA1_CLK_ENABLE();
+
+  /* DMA interrupt init */
+  /* DMA1_Channel1_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Channel1_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Channel1_IRQn);
+  /* DMA1_Channel2_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Channel2_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Channel2_IRQn);
+
+}
+
+/**
   * @brief GPIO Initialization Function
   * @param None
   * @retval None
@@ -466,6 +546,9 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOD_CLK_ENABLE();
   __HAL_RCC_GPIOG_CLK_ENABLE();
   HAL_PWREx_EnableVddIO2();
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(CS_GPIO_Port, CS_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pins : PE2 PE3 */
   GPIO_InitStruct.Pin = GPIO_PIN_2|GPIO_PIN_3;
@@ -513,13 +596,12 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : PA4 PA5 PA6 PA7 */
-  GPIO_InitStruct.Pin = GPIO_PIN_4|GPIO_PIN_5|GPIO_PIN_6|GPIO_PIN_7;
-  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+  /*Configure GPIO pin : CS_Pin */
+  GPIO_InitStruct.Pin = CS_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-  GPIO_InitStruct.Alternate = GPIO_AF5_SPI1;
-  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
+  HAL_GPIO_Init(CS_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pin : PB0 */
   GPIO_InitStruct.Pin = GPIO_PIN_0;
