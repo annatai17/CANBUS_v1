@@ -21,6 +21,8 @@
 
 extern char sd_path[];
 
+int sd_init(void);
+
 // Mount and unmount
 int sd_mount(void);
 int sd_unmount(void);

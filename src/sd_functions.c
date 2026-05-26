@@ -100,17 +100,14 @@ int sd_get_space_kb(void) {
 	return FR_OK;
 }
 
-int sd_mount(void) {
-	FRESULT res;
-	extern uint8_t sd_is_sdhc(void);
-
+int sd_init(void) {
 	printf("Linking SD driver...\r\n");
 	if (FATFS_LinkDriver(&SD_Driver, sd_path) != 0) {
 		printf("FATFS_LinkDriver failed\n");
 		return FR_DISK_ERR;
 	}
 
-	printf("Initializing disk...\r\n");
+	printf("Initializing disk... at path %s\r\n", sd_path);
 	DSTATUS stat = disk_initialize(0);
 
 	if (stat == RES_OK) {
@@ -127,6 +124,13 @@ int sd_mount(void) {
 		return FR_NOT_READY;
 	}
 
+	return FR_OK;
+}
+
+int sd_mount(void) {
+	FRESULT res;
+	extern uint8_t sd_is_sdhc(void);
+
 	printf("Attempting mount at %s...\r\n", sd_path);
 	res = f_mount(&fs, sd_path, 1);
 	if (res == FR_OK)
@@ -137,39 +141,11 @@ int sd_mount(void) {
 		// Capacity and free space reporting
 		sd_get_space_kb();
 		return FR_OK;
-
-
 	}
-
-	/* Many users were having issues with f_mkfs, so I have disabled it
-	 * You need to format SD card in FAT FileSysytem before inserting it
-	 */
-//	 Handle no filesystem by creating one
-//	if (res == FR_NO_FILESYSTEM)
-//	{
-//		printf("No filesystem found on SD card. Attempting format...\r\nThis will create 32MB Partition (Most Probably)\r\n");
-//		printf("If you need the full sized SD card, use the computer to format into FAT32\r\n");
-//		sd_format();
-//
-//		printf("Retrying mount after format...\r\n");
-//		res = f_mount(&fs, sd_path, 1);
-//		if (res == FR_OK) {
-//			printf("SD card formatted and mounted successfully.\r\n");
-//			printf("Card Type: %s\r\n", sd_is_sdhc() ? "SDHC/SDXC" : "SDSC");
-//
-//			// Report capacity after format
-//			sd_get_space_kb();
-//		}
-//		else {
-//			printf("Mount failed even after format: %d\r\n", res);
-//		}
-//		return res;
-//	}
 
 	// Any other mount error
 	printf("Mount failed with code: %d\r\n", res);
 	return res;
-
 }
 
 #include <stdio.h>

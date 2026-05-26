@@ -21,7 +21,6 @@
 #include "print.h"
 #include "fatfs.h"
 #include "sd_functions.h"
-#include "sd_benchmark.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -91,9 +90,6 @@ static void MX_SPI1_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-uint8_t bufr[80];
-UINT br;
-
 typedef struct {
     uint8_t is_extended;
     uint32_t id;
@@ -144,6 +140,26 @@ uint64_t extract_bits(uint64_t raw_data, int start, int length) {
 double decode_physical_value(uint64_t raw_data, int start, int length, double offset, double scale) {
   uint64_t raw_value = extract_bits(raw_data, start, length);
   return offset + scale * (double) raw_value;
+}
+
+void log_imu_data_to_sd(double accel[3], double angular[3]) {
+  // mount sd card
+  sd_mount();
+
+  // write data to sd card
+  // acceleration x,y,z and angular rate x,y,z
+  char write_buf[64];
+  snprintf(write_buf, sizeof(write_buf), "%f,%f,%f,%f,%f,%f\n", accel[0], accel[1], accel[2], angular[0], angular[1], angular[2]);
+
+  if (sd_append_file("imu_log.csv", write_buf) == FR_OK) {
+    printf("data successfully logged!\n");
+  }
+  else {
+    printf("data logging error\n");
+  }
+
+  // unmount sd card
+  sd_unmount();
 }
 
 /* USER CODE END 0 */
@@ -224,6 +240,8 @@ int main(void)
   uint32_t trip_distance; // distance traveled since last reset
   uint32_t total_distance; // distance traveled in total
 
+  // sd card init + startup operations  
+  sd_init();
   sd_mount();
   sd_list_files();
   sd_unmount();
@@ -315,18 +333,21 @@ int main(void)
         // printf("vehicle speed (m/s): %f\n", vehicle_speed);     
       }
       else if (imu_valid) {
-        double accel_x = decode_physical_value(raw_data, 1, 10, ACCEL_OFFSET, ACCEL_SCALE);
-        double accel_y = decode_physical_value(raw_data, 11, 10, ACCEL_OFFSET, ACCEL_SCALE);
-        double accel_z = decode_physical_value(raw_data, 21, 10, ACCEL_OFFSET, ACCEL_SCALE);
-        double angular_x = decode_physical_value(raw_data, 31, 11, ANGULAR_OFFSET, ANGULAR_SCALE);
-        double angular_y = decode_physical_value(raw_data, 42, 11, ANGULAR_OFFSET, ANGULAR_SCALE);
-        double angular_z = decode_physical_value(raw_data, 53, 11, ANGULAR_OFFSET, ANGULAR_SCALE);
+        double accel[3], angular[3];
+        accel[0] = decode_physical_value(raw_data, 1, 10, ACCEL_OFFSET, ACCEL_SCALE);
+        accel[1] = decode_physical_value(raw_data, 11, 10, ACCEL_OFFSET, ACCEL_SCALE);
+        accel[2] = decode_physical_value(raw_data, 21, 10, ACCEL_OFFSET, ACCEL_SCALE);
+        angular[0] = decode_physical_value(raw_data, 31, 11, ANGULAR_OFFSET, ANGULAR_SCALE);
+        angular[1] = decode_physical_value(raw_data, 42, 11, ANGULAR_OFFSET, ANGULAR_SCALE);
+        angular[2] = decode_physical_value(raw_data, 53, 11, ANGULAR_OFFSET, ANGULAR_SCALE);
 
+        printf("logging IMU data to SD Card...\n");
+        log_imu_data_to_sd(accel, angular);
         // printf("acceleration (m/s^2): (%f, %f, %f)\n", accel_x, accel_y, accel_z); 
         // printf("angular rate (deg/s): (%f, %f, %f)\n\n", angular_x, angular_y, angular_z);
       } 
 
-      // HAL_Delay(500);
+      HAL_Delay(500);
 
       // move ptr to next item in queue
       read_index = (read_index + 1) % QUEUE_SIZE;
